@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
     <meta charset="UTF-8">
-    <title>PIPI Monitor Pro | Tech Stats</title>
+    <title>PIPI Monitor Pro | Stream Filter</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.0/hls.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     
@@ -36,13 +36,21 @@
         button:hover, select:hover { background: #555; border-color: var(--accent); }
         .btn-active { background: var(--accent) !important; color: black !important; font-weight: bold; }
 
-        .page-info { font-family: monospace; font-size: 13px; color: var(--accent); margin: 0 10px; }
+        /* BẢNG CHỌN KÊNH (FILTER MODAL) */
+        #filter-modal {
+            display: none; position: fixed; top: 55px; left: 15px; 
+            background: var(--panel-bg); border: 1px solid var(--accent);
+            padding: 15px; border-radius: 8px; z-index: 200;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+            max-height: 80vh; overflow-y: auto; width: 250px;
+        }
+        .filter-item { display: flex; align-items: center; margin-bottom: 8px; font-size: 13px; cursor: pointer; }
+        .filter-item input { margin-right: 10px; accent-color: var(--accent); scale: 1.2; }
 
-        /* LƯỚI VIDEO (GRID) */
+        /* LƯỚI VIDEO */
         #video-grid {
             flex-grow: 1; display: grid; gap: 2px; padding: 2px;
             background: #000; overflow: hidden;
-            /* Mặc định 4x4 */
             grid-template-columns: repeat(4, 1fr);
             grid-template-rows: repeat(4, 1fr);
         }
@@ -55,8 +63,7 @@
             position: relative; background: #000; border: 1px solid #333;
             display: flex; align-items: center; justify-content: center; overflow: hidden;
         }
-        .cam-hidden { display: none !important; }
-
+        
         video { width: 100%; height: 100%; object-fit: contain; background: #000; }
 
         .cam-label {
@@ -66,29 +73,24 @@
             z-index: 5; pointer-events: none; border-bottom-right-radius: 4px;
         }
 
-        /* BẢNG THÔNG SỐ */
         .stats-overlay {
             position: absolute; top: 18px; right: 4px;
             background: rgba(0, 0, 0, 0.85); color: #00ff00;
             font-family: monospace; font-size: 9px; padding: 4px;
-            border-radius: 4px; border: 1px solid #444;
             z-index: 10; pointer-events: none; display: none;
-            line-height: 1.3; min-width: 90px;
+            line-height: 1.3; border: 1px solid #444;
         }
-        .stat-row { display: flex; justify-content: space-between; gap: 8px; }
-        .stat-val.danger { color: #ff4444; }
     </style>
 </head>
 <body>
 
     <header>
         <div class="btn-group">
-            <strong style="color: var(--accent); margin-right: 10px;"><i class="fas fa-video"></i> PIPI PRO</strong>
-            
+            <button onclick="toggleFilter()" id="btn-filter" style="border-color: var(--accent);"><i class="fas fa-filter"></i> Ẩn/Hiện Kênh</button>
             <select id="quality-selector" onchange="changeQuality(this.value)">
                 <option value="-1">Auto Quality</option>
-                <option value="0">Low (360p)</option>
-                <option value="1">High (HD)</option>
+                <option value="0">Low</option>
+                <option value="1">High</option>
             </select>
         </div>
 
@@ -100,174 +102,173 @@
 
         <div class="btn-group">
             <button onclick="changePage(-1)"><i class="fas fa-chevron-left"></i></button>
-            <span class="page-info" id="page-display">1/1</span>
+            <span id="page-display" style="color:var(--accent); font-family:monospace; font-weight:bold;">1/1</span>
             <button onclick="changePage(1)"><i class="fas fa-chevron-right"></i></button>
         </div>
 
         <div class="btn-group">
-            <button onclick="toggleStats()" id="btn-stats"><i class="fas fa-microchip"></i> Stats</button>
-            <button onclick="toggleFit()" id="btn-fit"><i class="fas fa-expand"></i> Fit</button>
+            <button onclick="toggleStats()" id="btn-stats">Stats</button>
             <button onclick="location.reload()"><i class="fas fa-sync"></i></button>
         </div>
     </header>
 
-    <div id="video-grid"></div>
+    <div id="filter-modal">
+        <div style="margin-bottom: 10px; border-bottom: 1px solid #444; padding-bottom: 5px; font-weight: bold; color: var(--accent);">Danh sách Camera</div>
+        <div id="filter-list"></div>
+        <button onclick="toggleFilter()" style="width: 100%; margin-top: 10px; background: var(--accent); color: black;">Xong</button>
+    </div>
+
+    <div id="video-grid" class="layout-4x4"></div>
 
     <script>
         const SERVER_HOST = 'http://triduckinglive.ddns.net:8080';
         
-        // 👇 KHU VỰC THAY ĐỔI TÊN LUỒNG 🔴
-        const STREAM_LIST = [
+        // 🔴 DANH SÁCH TẤT CẢ KÊNH
+        const MASTER_STREAM_LIST = [
             'source', 'source1', 'source2',
             'pipi-1', 'pipi-2', 'pipi-3', 'pipi-4', 'pipi-5', 
             'pipi-6', 'pipi-7', 'pipi-8', 'pipi-9', 'pipi-10', 
             'pipi-11', 'pipi-12', 'pipi-13', 'pipi-14', 'pipi-15'
         ];
 
+        // Danh sách các kênh đang được chọn để hiển thị (Mặc định hiện tất cả)
+        let activeStreams = [...MASTER_STREAM_LIST];
+        
         const hlsInstances = {};
         let currentLayout = 16;
         let currentPage = 1;
         let showStats = false;
-        let isCover = false;
-        let globalQuality = -1;
 
         document.addEventListener("DOMContentLoaded", () => {
-            const grid = document.getElementById('video-grid');
-            
-            STREAM_LIST.forEach((name, idx) => {
-                const div = document.createElement('div');
-                div.className = 'cam-container cam-hidden';
-                div.id = `container-${name}`;
-                div.innerHTML = `
-                    <div class="cam-label">${name.toUpperCase()}</div>
-                    <div class="stats-overlay" id="stats-${name}">
-                        <div class="stat-row"><span>RES:</span><span id="res-${name}">--</span></div>
-                        <div class="stat-row"><span>BIT:</span><span id="bit-${name}">--</span></div>
-                        <div class="stat-row"><span>BUF:</span><span id="buf-${name}">--</span></div>
-                    </div>
-                    <video id="vid-${name}" muted playsinline controls></video>
-                `;
-                grid.appendChild(div);
-                loadHls(name);
-            });
-
+            initFilterMenu();
             renderGrid();
             setInterval(updateAllStats, 1000);
         });
+
+        // TẠO MENU ẨN/HIỆN KÊNH
+        function initFilterMenu() {
+            const listContainer = document.getElementById('filter-list');
+            MASTER_STREAM_LIST.forEach(name => {
+                const label = document.createElement('label');
+                label.className = 'filter-item';
+                label.innerHTML = `
+                    <input type="checkbox" checked onchange="updateActiveStreams('${name}', this.checked)">
+                    ${name.toUpperCase()}
+                `;
+                listContainer.appendChild(label);
+            });
+        }
+
+        function updateActiveStreams(name, isChecked) {
+            if (isChecked) {
+                if (!activeStreams.includes(name)) activeStreams.push(name);
+            } else {
+                activeStreams = activeStreams.filter(s => s !== name);
+            }
+            // Sắp xếp lại activeStreams theo đúng thứ tự của MASTER_STREAM_LIST
+            activeStreams.sort((a, b) => MASTER_STREAM_LIST.indexOf(a) - MASTER_STREAM_LIST.indexOf(b));
+            
+            currentPage = 1; // Reset về trang 1 khi lọc
+            renderGrid();
+        }
+
+        function toggleFilter() {
+            const modal = document.getElementById('filter-modal');
+            const btn = document.getElementById('btn-filter');
+            const isOpen = modal.style.display === 'block';
+            modal.style.display = isOpen ? 'none' : 'block';
+            btn.classList.toggle('btn-active', !isOpen);
+        }
+
+        function renderGrid() {
+            const grid = document.getElementById('video-grid');
+            grid.innerHTML = ''; 
+            
+            const totalPages = Math.ceil(activeStreams.length / currentLayout) || 1;
+            document.getElementById('page-display').innerText = `${currentPage}/${totalPages}`;
+
+            const startIdx = (currentPage - 1) * currentLayout;
+
+            for (let i = 0; i < currentLayout; i++) {
+                const streamIndex = startIdx + i;
+                const name = activeStreams[streamIndex];
+
+                const div = document.createElement('div');
+                div.className = 'cam-container';
+
+                if (name) {
+                    div.innerHTML = `
+                        <div class="cam-label">${name.toUpperCase()}</div>
+                        <div class="stats-overlay" id="stats-${name}">
+                            RES: <span id="res-${name}">--</span><br>
+                            BUF: <span id="buf-${name}">--</span>
+                        </div>
+                        <video id="vid-${name}" muted playsinline controls></video>
+                    `;
+                    grid.appendChild(div);
+                    loadHls(name);
+                } else {
+                    div.innerHTML = `<div style="color:#222; font-size: 10px;">TRỐNG</div>`;
+                    grid.appendChild(div);
+                }
+            }
+        }
 
         function loadHls(name) {
             const video = document.getElementById(`vid-${name}`);
             const url = `${SERVER_HOST}/hls/${name}/index.m3u8`;
 
             if (Hls.isSupported()) {
-                const hls = new Hls({ 
-                    manifestLoadingTimeOut: 10000,
-                    capLevelToPlayerSize: true 
-                });
+                if (hlsInstances[name]) hlsInstances[name].destroy(); // Reset nếu có sẵn
+
+                const hls = new Hls({ capLevelToPlayerSize: true, maxBufferLength: 10 });
                 hls.loadSource(url);
                 hls.attachMedia(video);
                 hlsInstances[name] = hls;
-
-                hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    if (!video.paused) return;
-                    video.play().catch(() => {});
-                });
-
-                hls.on(Hls.Events.ERROR, (e, data) => {
-                    if(data.fatal) hls.startLoad();
-                });
+                hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(()=>{}));
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = url;
+            }
+        }
+
+        function changePage(delta) {
+            const totalPages = Math.ceil(activeStreams.length / currentLayout);
+            if (currentPage + delta >= 1 && currentPage + delta <= totalPages) {
+                currentPage += delta;
+                renderGrid();
             }
         }
 
         function setLayout(count) {
             currentLayout = count;
             currentPage = 1;
-            const grid = document.getElementById('video-grid');
-            grid.className = `layout-${count === 4 ? '2x2' : count === 9 ? '3x3' : '4x4'}`;
-            
+            document.getElementById('video-grid').className = `layout-${count === 4 ? '2x2' : count === 9 ? '3x3' : '4x4'}`;
             document.querySelectorAll('[id^="btn-"]').forEach(b => b.classList.remove('btn-active'));
             document.getElementById(`btn-${count === 4 ? '2x2' : count === 9 ? '3x3' : '4x4'}`).classList.add('btn-active');
-            
             renderGrid();
         }
 
-        function changePage(delta) {
-            const totalPages = Math.ceil(STREAM_LIST.length / currentLayout);
-            let nextPage = currentPage + delta;
-            if (nextPage >= 1 && nextPage <= totalPages) {
-                currentPage = nextPage;
-                renderGrid();
-            }
-        }
-
-        function renderGrid() {
-            const start = (currentPage - 1) * currentLayout;
-            const end = start + currentLayout;
-
-            STREAM_LIST.forEach((name, idx) => {
-                const container = document.getElementById(`container-${name}`);
-                const video = document.getElementById(`vid-${name}`);
-                
-                if (idx >= start && idx < end) {
-                    container.classList.remove('cam-hidden');
-                    video.play().catch(() => {});
-                } else {
-                    container.classList.add('cam-hidden');
-                    video.pause();
-                }
-            });
-
-            const totalPages = Math.ceil(STREAM_LIST.length / currentLayout);
-            document.getElementById('page-display').innerText = `${currentPage}/${totalPages}`;
-        }
-
         function changeQuality(val) {
-            globalQuality = parseInt(val);
-            Object.values(hlsInstances).forEach(hls => {
-                hls.currentLevel = globalQuality;
-            });
+            Object.values(hlsInstances).forEach(hls => { hls.currentLevel = parseInt(val); });
         }
 
         function toggleStats() {
             showStats = !showStats;
-            document.querySelectorAll('.stats-overlay').forEach(p => p.style.display = showStats ? 'block' : 'none');
+            document.querySelectorAll('.stats-overlay').forEach(el => el.style.display = showStats ? 'block' : 'none');
             document.getElementById('btn-stats').classList.toggle('btn-active', showStats);
-        }
-
-        function toggleFit() {
-            isCover = !isCover;
-            document.querySelectorAll('video').forEach(v => v.style.objectFit = isCover ? 'cover' : 'contain');
-            document.getElementById('btn-fit').classList.toggle('btn-active', isCover);
         }
 
         function updateAllStats() {
             if (!showStats) return;
-            STREAM_LIST.forEach(name => {
+            activeStreams.forEach(name => {
                 const video = document.getElementById(`vid-${name}`);
-                const hls = hlsInstances[name];
-                const container = document.getElementById(`container-${name}`);
-                
-                if (container.classList.contains('cam-hidden')) return;
-
                 if (video && !video.paused) {
-                    document.getElementById(`res-${name}`).innerText = `${video.videoWidth}x${video.videoHeight}`;
-
-                    if (hls && hls.levels && hls.currentLevel !== -1) {
-                        const level = hls.levels[hls.currentLevel];
-                        if (level && level.bitrate) {
-                            document.getElementById(`bit-${name}`).innerText = `${Math.round(level.bitrate/1000)}k`;
-                        }
-
-                        let bufferLen = 0;
-                        const buf = video.buffered;
-                        if (buf.length) {
-                            bufferLen = buf.end(buf.length - 1) - video.currentTime;
-                        }
-                        const bEl = document.getElementById(`buf-${name}`);
-                        bEl.innerText = `${bufferLen.toFixed(1)}s`;
-                        bEl.className = bufferLen < 0.6 ? 'stat-val danger' : 'stat-val';
+                    const resEl = document.getElementById(`res-${name}`);
+                    const bufEl = document.getElementById(`buf-${name}`);
+                    if (resEl) resEl.innerText = `${video.videoWidth}x${video.videoHeight}`;
+                    if (bufEl && video.buffered.length) {
+                        const bufLen = video.buffered.end(video.buffered.length - 1) - video.currentTime;
+                        bufEl.innerText = `${bufLen.toFixed(1)}s`;
                     }
                 }
             });
