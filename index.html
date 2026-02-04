@@ -3,15 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>PIPI MONITOR SYSTEM</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.4.0/hls.min.js"></script>
+    <title>PIPI HEVC SYSTEM</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.3/hls.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     
     <style>
         :root {
             --bg-color: #0d0d0d;
             --panel-color: #1a1a1a;
-            --accent-color: #ff9800; /* Màu cam đặc trưng cho Pipi */
+            --accent-color: #ff9800;
+            --hevc-color: #00e5ff; /* Màu xanh riêng cho HEVC */
             --danger-color: #ff3333;
         }
 
@@ -87,6 +88,8 @@
         .error-content { text-align: center; color: var(--danger-color); }
         .btn-retry { margin-top: 15px; background: #333; color: #fff; border: 1px solid #555; padding: 5px 15px; }
         .btn-retry:hover { background: var(--accent-color); color: #000; }
+        
+        .hevc-warning { font-size: 10px; color: #00e5ff; margin-top: 5px; cursor: pointer; text-decoration: underline; }
 
     </style>
 </head>
@@ -124,8 +127,7 @@
         // === CẤU HÌNH SERVER ===
         const SERVER_HOST = 'https://triduckinglive.ddns.net:4433';
         
-        // === DANH SÁCH LUỒNG PIPI ===
-        // Lưu ý: Đảm bảo tên trong MistServer là pipi1, pipi2... (không dấu cách)
+        // === DANH SÁCH LUỒNG ===
         const MASTER_LIST = [
             'pipi-1', 'pipi-2', 'pipi-3', 'pipi-4',
             'pipi-5', 'pipi-6', 'pipi-7', 'pipi-8',
@@ -145,7 +147,6 @@
             setInterval(updateStatsData, 1000);
         });
 
-        // 1. RENDER GRID
         function renderGrid() {
             const grid = document.getElementById('video-grid');
             grid.innerHTML = '';
@@ -163,14 +164,15 @@
                     
                     <div class="stats-overlay" id="stats-${name}">
                         RES: <span id="res-${name}">--</span><br>
-                        BUF: <span id="buf-${name}">--</span><br>
-                        BIT: <span id="bit-${name}">--</span>
+                        CODEC: <span id="codec-${name}">--</span><br>
+                        BUF: <span id="buf-${name}">--</span>
                     </div>
 
                     <div class="error-screen" id="err-${name}">
                         <div class="error-content">
-                            <i class="fas fa-video-slash" style="font-size:24px"></i><br>
-                            NO SIGNAL<br><span style="font-size:10px" id="reason-${name}"></span>
+                            <i class="fas fa-exclamation-triangle" style="font-size:24px"></i><br>
+                            ERROR<br><span style="font-size:10px" id="reason-${name}"></span>
+                            <div class="hevc-warning" onclick="alert('Để xem HEVC trên Windows, bạn cần cài đặt HEVC Video Extensions từ Microsoft Store.')">Lỗi HEVC?</div>
                             <br><button class="btn-retry" onclick="retryStream('${name}')">Retry</button>
                         </div>
                     </div>
@@ -183,7 +185,6 @@
             toggleStatsDisplay();
         }
 
-        // 2. LOAD STREAM (Với Kill-Switch & Stable Buffer)
         function loadStream(name) {
             const video = document.getElementById(`vid-${name}`);
             const errScreen = document.getElementById(`err-${name}`);
@@ -194,8 +195,9 @@
             if (Hls.isSupported()) {
                 const hls = new Hls({
                     capLevelToPlayerSize: true,
-                    maxBufferLength: 30, // Ổn định
+                    maxBufferLength: 30, 
                     maxMaxBufferLength: 60,
+                    enableWorker: true, // Bật đa luồng để xử lý HEVC tốt hơn
                 });
                 
                 hls.loadSource(url);
@@ -204,8 +206,14 @@
                 applyQuality(hls);
 
                 hls.on(Hls.Events.ERROR, function (event, data) {
+                    // Kiểm tra lỗi không tương thích Codec (Thường là do thiếu HEVC)
+                    if (data.details === 'manifestIncompatibleCodecsError') {
+                        stopStream(name, "Trình duyệt thiếu Codec HEVC");
+                        return;
+                    }
+
                     if (data.response && (data.response.code === 404 || data.response.code === 403)) {
-                        stopStream(name, "Offline (404)"); // DỪNG NGAY NẾU KHÔNG CÓ LUỒNG
+                        stopStream(name, "Offline (404)"); 
                         return;
                     }
                     if (data.fatal) {
@@ -217,6 +225,7 @@
                     }
                 });
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari trên iPhone/Mac hỗ trợ HEVC native
                 video.src = url;
                 video.onerror = () => stopStream(name, "iOS Error");
             }
@@ -231,7 +240,6 @@
 
         function retryStream(name) { loadStream(name); }
 
-        // 3. STATS & ULTILITIES
         function toggleStats() {
             showStats = !showStats;
             document.getElementById('btn-stats').classList.toggle('active');
@@ -245,6 +253,7 @@
             activeStreams.slice(0, currentLayout).forEach(name => {
                 const video = document.getElementById(`vid-${name}`);
                 if (!video) return;
+                
                 document.getElementById(`res-${name}`).innerText = (video.videoWidth > 0) ? `${video.videoWidth}x${video.videoHeight}` : "Waiting";
                 
                 if(video.buffered.length > 0) {
@@ -254,12 +263,25 @@
 
                 const hls = hlsInstances[name];
                 if (hls && hls.levels && hls.currentLevel !== -1 && hls.levels[hls.currentLevel]) {
-                    document.getElementById(`bit-${name}`).innerText = `${(hls.levels[hls.currentLevel].bitrate / 1024).toFixed(0)} kbps`;
+                    // Lấy tên Codec và hiển thị
+                    const codec = hls.levels[hls.currentLevel].videoCodec;
+                    let displayCodec = codec || '--';
+                    
+                    // Highlight nếu là HEVC
+                    const codecEl = document.getElementById(`codec-${name}`);
+                    if (codec && (codec.includes('hvc') || codec.includes('hev'))) {
+                        displayCodec = "HEVC (H.265)";
+                        codecEl.style.color = "#00e5ff"; // Màu xanh
+                    } else if (codec && codec.includes('avc')) {
+                        displayCodec = "H.264";
+                        codecEl.style.color = "#fff";
+                    }
+                    codecEl.innerText = displayCodec;
                 }
             });
         }
 
-        // 4. MENU & LAYOUT
+        // --- CÁC HÀM CŨ GIỮ NGUYÊN ---
         function initFilterMenu() {
             const c = document.getElementById('checklist-container');
             MASTER_LIST.forEach(n => {
@@ -293,4 +315,3 @@
     </script>
 </body>
 </html>
-
